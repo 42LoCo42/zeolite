@@ -1,0 +1,11 @@
+PROJECT_NAME          = zeolite
+PROJECT_NUMBER        = 1
+PROJECT_BRIEF         = A secure communications library
+
+OPTIMIZE_OUTPUT_FOR_C = YES
+JAVADOC_AUTOBRIEF     = YES
+SORT_MEMBER_DOCS      = NO
+
+GENERATE_HTML         = NO
+GENERATE_LATEX        = NO
+GENERATE_XML          = YES

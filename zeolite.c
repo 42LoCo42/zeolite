@@ -1,8 +1,7 @@
 #include "zeolite.h"
 
-#include <errno.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PROTOCOL "zeolite1"
 #define PROTOCOL_LEN (sizeof(PROTOCOL))
@@ -12,11 +11,11 @@ int zeolite_init() {
 	return sodium_init();
 }
 
-int zeolite_create_longterm_keys(zeolite* z) {
+zeolite_error zeolite_create(zeolite* z) {
 	return crypto_sign_keypair(z->sign_pk, z->sign_sk) == 0 ? SUCCESS : KEYGEN_ERROR;
 }
 
-int send(int fd, const void* ptr, size_t len) {
+zeolite_error send(int fd, const void* ptr, size_t len) {
 	while(len > 0) {
 		ssize_t ret = write(fd, ptr, len);
 		if(ret < 1) return SEND_ERROR;
@@ -26,7 +25,7 @@ int send(int fd, const void* ptr, size_t len) {
 	return SUCCESS;
 }
 
-int recv(int fd, void* ptr, size_t len) {
+zeolite_error recv(int fd, void* ptr, size_t len) {
 	ssize_t ret = read(fd, ptr, len);
 	if((size_t) ret != len) {
 		perror("");
@@ -36,13 +35,16 @@ int recv(int fd, void* ptr, size_t len) {
 }
 
 #define safe(x) { \
-	int ret = x; \
+	zeolite_error ret = x; \
 	if(ret != SUCCESS) { \
 		printf("%d\n", __LINE__); \
 		return ret; \
 	}}
 
-int zeolite_create_channel(const zeolite* z, zeolite_channel* c, int fd) {
+zeolite_error zeolite_create_channel(
+	const zeolite* z, zeolite_channel* c,
+	int fd, zeolite_trust_callback cb
+) {
 	c->fd = fd;
 
 	// exchange & check protocol
@@ -56,6 +58,9 @@ int zeolite_create_channel(const zeolite* z, zeolite_channel* c, int fd) {
 	// exchange public signing keys (client identification)
 	safe(send(fd, z->sign_pk,  sizeof(z->sign_pk)));
 	safe(recv(fd, c->other_pk, sizeof(c->other_pk)));
+
+	// Check whether we should trust this client
+	if(cb(c->other_pk) != 0) return TRUST_ERROR;
 
 	// create, sign & exchange ephemeral keys (for shared key transfer)
 	zeolite_eph_pk eph_pk;
@@ -78,10 +83,10 @@ int zeolite_create_channel(const zeolite* z, zeolite_channel* c, int fd) {
 	// create, encrypt & send symmetric sender key
 	zeolite_sym_k  send_k;
 	zeolite_sym_k  recv_k;
-	unsigned char      full_sym_msg[
-		crypto_box_NONCEBYTES + crypto_box_MACBYTES + sizeof(send_k)];
-	unsigned char*     nonce = full_sym_msg;
-	unsigned char*     ciphertext = full_sym_msg + crypto_box_NONCEBYTES;
+	unsigned char  full_sym_msg[crypto_box_NONCEBYTES
+		+ crypto_box_MACBYTES + sizeof(send_k)];
+	unsigned char* nonce = full_sym_msg;
+	unsigned char* ciphertext = full_sym_msg + crypto_box_NONCEBYTES;
 
 	crypto_secretstream_xchacha20poly1305_keygen(send_k);
 	randombytes_buf(nonce, crypto_box_NONCEBYTES);
@@ -96,7 +101,7 @@ int zeolite_create_channel(const zeolite* z, zeolite_channel* c, int fd) {
 		nonce, other_eph_pk, eph_sk) != 0) return DECRYPT_ERROR;
 
 	// init stream states
-	unsigned char      header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
+	unsigned char header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
 
 	if(crypto_secretstream_xchacha20poly1305_init_push(
 		&c->send_state, header, send_k) != 0) return ENCRYPT_ERROR;
@@ -109,7 +114,7 @@ int zeolite_create_channel(const zeolite* z, zeolite_channel* c, int fd) {
 	return SUCCESS;
 }
 
-int zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t len) {
+zeolite_error zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t len) {
 	size_t         cipher_len = len + crypto_secretstream_xchacha20poly1305_ABYTES;
 	unsigned char* ciphertext = malloc(cipher_len);
 
@@ -121,7 +126,7 @@ int zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t le
 	return SUCCESS;
 }
 
-int zeolite_channel_recv(zeolite_channel* c, unsigned char* msg, size_t len) {
+zeolite_error zeolite_channel_recv(zeolite_channel* c, unsigned char* msg, size_t len) {
 	size_t         cipher_len = len + crypto_secretstream_xchacha20poly1305_ABYTES;
 	unsigned char* ciphertext = malloc(cipher_len);
 
@@ -165,6 +170,7 @@ const char* zeolite_error_str(zeolite_error e) {
 	case SEND_ERROR:     return "Could not send data";
 	case PROTOCOL_ERROR: return "Communications rotocol violation";
 	case KEYGEN_ERROR:   return "Could not generate key(s)";
+	case TRUST_ERROR:    return "Untrusted client";
 	case SIGN_ERROR:     return "Could not sign data";
 	case VERIFY_ERROR:   return "Invalid signature";
 	case ENCRYPT_ERROR:  return "Could not encrypt data";

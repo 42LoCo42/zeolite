@@ -1,10 +1,6 @@
 #define _POSIX_C_SOURCE 200112L
 #include <err.h>
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
-#include <netinet/ip.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "zeolite.h"
@@ -49,6 +45,13 @@ int server(int sock) {
 	return client;
 }
 
+int trust(zeolite_sign_pk pk) {
+	char* b64 = zeolite_enc_b64(pk, sizeof(zeolite_sign_pk));
+	printf("Other client ID: %s\n", b64);
+	free(b64);
+	return SUCCESS;
+}
+
 int main(int argc, char** argv) {
 	if(argc != 2) usage(argv[0]);
 
@@ -67,11 +70,16 @@ int main(int argc, char** argv) {
 	if(zeolite_init() < 0) errx(1, "Could not load zeolite library");
 
 	zeolite z = {0};
-	zeolite_create_longterm_keys(&z);
+	zeolite_create(&z);
+
+	char* b64 = zeolite_enc_b64(z.sign_pk, sizeof(zeolite_sign_pk));
+	printf("My client ID:    %s\n", b64);
+	free(b64);
 
 	zeolite_channel c = {0};
-	int e = zeolite_create_channel(&z, &c, comm);
+	int e = zeolite_create_channel(&z, &c, comm, trust);
 	printf("Channel creation: %s\n", zeolite_error_str(e));
+	if(e != SUCCESS) return 1;
 
 	const char* msg = "foobar";
 	char buf[6] = {0};
