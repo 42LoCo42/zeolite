@@ -1,7 +1,7 @@
-CFLAGS := -std=c11 -Wall -Wextra -pedantic -Wno-pointer-arith $(CFLAGS)
-LDFLAGS := -lsodium $(LDFLAGS)
-OUTPUTS := libzeolite.so cli
-DESTDIR := /
+CFLAGS   += -std=c11 -Wall -Wextra -pedantic -Wno-pointer-arith
+LDFLAGS  += -lsodium
+OUTPUTS  := libzeolite.so cli
+DESTDIR  := /
 VALGRIND := valgrind \
 	--leak-check=full --show-leak-kinds=all \
 	--track-origins=yes --suppressions=valgrind.conf
@@ -28,7 +28,6 @@ doc:
 		--pkg "The zeolite manual" \
 		--short-pkg zeolite \
 		xml/zeolite_8h.xml
-		$<
 
 installdoc: doc
 	install -Dm644 -t $(DESTDIR)/usr/share/man/man3/zeolite man/*
@@ -49,7 +48,7 @@ libzeolite.so: zeolite.c
 	$(CC) $(CFLAGS) -fPIC -shared $(LDFLAGS) $^ -o $@
 
 %: %.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -L. -lzeolite -Wl,-rpath,. $^ -o $@
+	$(CC) $(CFLAGS) $(LDFLAGS) -L. -lzeolite -Wl,-rpath,. $< -o $@
 
 cli: cli.c usage.h
 
