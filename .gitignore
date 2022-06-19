@@ -1,4 +1,5 @@
 libzeolite.so
-test
+cli
 man
 xml
+usage.h

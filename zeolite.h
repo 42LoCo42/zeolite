@@ -35,6 +35,7 @@ typedef int (*zeolite_trust_callback)(zeolite_sign_pk);
 /// Use zeolite_error_str() to get a string.
 typedef enum {
 	SUCCESS = 0,
+	EOF_ERROR,
 	RECV_ERROR,
 	SEND_ERROR,
 	PROTOCOL_ERROR,
@@ -58,7 +59,6 @@ typedef enum {
 /// However, due to the usage of Perfect Forward Secrecy,
 /// past communications can't be decrypted unless their
 /// ephemeral keys got leaked somehow.
-
 typedef struct {
 	zeolite_sign_pk sign_pk; ///< The public signature key
 	zeolite_sign_sk sign_sk; ///< The secret signature key
@@ -70,7 +70,6 @@ typedef struct {
 /// supplied socket and tries to establish a shared
 /// encryption state. If this succeeds, the created channel object
 /// can be used for secure communication over the socket.
-
 typedef struct {
 	/// The file descriptor of the underlying socket
 	int fd;
@@ -87,8 +86,10 @@ typedef struct {
 
 /// Initialize the zeolite library.
 /// @returns A negative number on error.
-
 int zeolite_init();
+
+/// Free internal storage areas of zeolite.
+void zeolite_free();
 
 /// Create a zeolite identity.
 ///
@@ -96,7 +97,6 @@ int zeolite_init();
 /// then save the generated keys externally (but in a safe location).
 /// If you use different keys for an identity, your clients will
 /// probably reject communication attempts.
-
 zeolite_error zeolite_create(zeolite* z);
 
 /// Create a zeolite channel.
@@ -105,7 +105,6 @@ zeolite_error zeolite_create(zeolite* z);
 /// to your client. Zeolite will then establish a shared
 /// encryption state with this client, provided the trust callback
 /// returns SUCCESS.
-
 zeolite_error zeolite_create_channel(
 	const zeolite* z, zeolite_channel* c,
 	int socket, zeolite_trust_callback cb
@@ -114,8 +113,17 @@ zeolite_error zeolite_create_channel(
 /// Send a message on a zeolite channel.
 zeolite_error zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t len);
 
+/// Rekey this channel.
+zeolite_error zeolite_channel_rekey(zeolite_channel* c);
+
+/// Close this channel.
+zeolite_error zeolite_channel_close(zeolite_channel* c);
+
 /// Receive a message from zeolite channel.
-zeolite_error zeolite_channel_recv(zeolite_channel* c,       unsigned char* msg, size_t len);
+///
+/// `msg` will be set to a pointer to the decrypted message.
+/// `len` will be set to the size of the decrypted message.
+zeolite_error zeolite_channel_recv(zeolite_channel* c, unsigned char** msg, size_t* len);
 
 /// Encode something as base64. You must free the returned string.
 char* zeolite_enc_b64(const unsigned char* msg, size_t len);
@@ -125,7 +133,6 @@ char* zeolite_enc_b64(const unsigned char* msg, size_t len);
 /// `msg` should be a pointer to a char*, which will be allocated
 /// and filled with the decoded value. You must free it later.
 /// @returns The size of the original string.
-
 size_t zeolite_dec_b64(const char* b64, size_t len, unsigned char** msg);
 
 /// A converter from zeolite error codes to strings.

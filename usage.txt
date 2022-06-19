@@ -1,0 +1,21 @@
+Usage: %s [options] <mode>
+Options:
+	[TODO] -i <name>              Environment variable storing base64-encoded identity
+	[TODO] -I <file>              File storing identity
+	[TODO] -k                     Disable trust checking
+	[TODO] -t <client ID>         Trust this ID
+	[TODO] -T <client ID file>    Trust all IDs in this file
+	-v                     Enable verbose output
+Modes:
+	gen: Generate new identity. It will be printed to stdout in raw form
+		and to stderr in base64-encoded form.
+
+	client <host> <port>: Connects to the specified host and port.
+		stdin is sent and received data is printed to stdout.
+
+	single <host> <port>: Starts a server that accepts a single connection.
+		stdin is sent and received data is printed to stdout.
+
+	multi <host> <port> <cmd> [args]: Starts a multi handler server.
+		It will spawn cmd with args for each connection,
+		pass received data to stdin and send data read from stdout.

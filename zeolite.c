@@ -1,23 +1,29 @@
 #include "zeolite.h"
 
+#include <err.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #define PROTOCOL "zeolite1"
 #define PROTOCOL_LEN (sizeof(PROTOCOL))
 #define B64_VARIANT sodium_base64_VARIANT_ORIGINAL
 
-int zeolite_init() {
-	return sodium_init();
-}
+#define safe(x) { \
+	zeolite_error ret = x; \
+	if(ret != SUCCESS) { \
+		warnx("%s:%d: %s", __FILE__, __LINE__, zeolite_error_str(ret)); \
+		return ret; \
+	}}
 
-zeolite_error zeolite_create(zeolite* z) {
-	return crypto_sign_keypair(z->sign_pk, z->sign_sk) == 0 ? SUCCESS : KEYGEN_ERROR;
-}
+static unsigned char* cipher_storage = NULL;
+static unsigned char* msg_storage    = NULL;
 
-zeolite_error send(int fd, const void* ptr, size_t len) {
+static zeolite_error my_send(
+	int fd, const void* ptr, size_t len, int flags
+) {
 	while(len > 0) {
-		ssize_t ret = write(fd, ptr, len);
+		ssize_t ret = send(fd, ptr, len, flags);
 		if(ret < 1) return SEND_ERROR;
 		ptr += ret;
 		len -= ret;
@@ -25,21 +31,29 @@ zeolite_error send(int fd, const void* ptr, size_t len) {
 	return SUCCESS;
 }
 
-zeolite_error recv(int fd, void* ptr, size_t len) {
-	ssize_t ret = read(fd, ptr, len);
-	if((size_t) ret != len) {
-		perror("");
-		return RECV_ERROR;
-	}
+static zeolite_error my_recv(int fd, void* ptr, size_t len) {
+	ssize_t ret = recv(fd, ptr, len, MSG_WAITALL);
+	if(ret == 0) return EOF_ERROR;
+	if((size_t) ret != len) return RECV_ERROR;
 	return SUCCESS;
 }
 
-#define safe(x) { \
-	zeolite_error ret = x; \
-	if(ret != SUCCESS) { \
-		printf("%d\n", __LINE__); \
-		return ret; \
-	}}
+int zeolite_init() {
+	return sodium_init();
+}
+
+void zeolite_free() {
+	free(cipher_storage);
+	free(msg_storage);
+	cipher_storage = NULL;
+	msg_storage    = NULL;
+}
+
+zeolite_error zeolite_create(zeolite* z) {
+	return
+		crypto_sign_keypair(z->sign_pk, z->sign_sk) == 0
+		? SUCCESS : KEYGEN_ERROR;
+}
 
 zeolite_error zeolite_create_channel(
 	const zeolite* z, zeolite_channel* c,
@@ -50,14 +64,14 @@ zeolite_error zeolite_create_channel(
 	// exchange & check protocol
 	char other_protocol[PROTOCOL_LEN] = {0};
 
-	safe(send(fd, PROTOCOL, PROTOCOL_LEN));
-	safe(recv(fd, other_protocol, PROTOCOL_LEN));
+	safe(my_send(fd, PROTOCOL, PROTOCOL_LEN, 0));
+	safe(my_recv(fd, other_protocol, PROTOCOL_LEN));
 	if(strncmp(PROTOCOL, other_protocol, PROTOCOL_LEN) != 0)
 		return PROTOCOL_ERROR;
 
 	// exchange public signing keys (client identification)
-	safe(send(fd, z->sign_pk,  sizeof(z->sign_pk)));
-	safe(recv(fd, c->other_pk, sizeof(c->other_pk)));
+	safe(my_send(fd, z->sign_pk,  sizeof(z->sign_pk), 0));
+	safe(my_recv(fd, c->other_pk, sizeof(c->other_pk)));
 
 	// Check whether we should trust this client
 	if(cb(c->other_pk) != 0) return TRUST_ERROR;
@@ -71,12 +85,12 @@ zeolite_error zeolite_create_channel(
 	if(crypto_box_keypair(eph_pk, eph_sk) != 0) return KEYGEN_ERROR;
 	if(crypto_sign(eph_msg, NULL, eph_pk,
 		sizeof(eph_pk), z->sign_sk) != 0) return SIGN_ERROR;
-	safe(send(fd, eph_msg, eph_msg_len));
+	safe(my_send(fd, eph_msg, eph_msg_len, 0));
 
 	// read & verify signed ephemeral public key
 	zeolite_eph_sk other_eph_pk;
 
-	safe(recv(fd, eph_msg, eph_msg_len));
+	safe(my_recv(fd, eph_msg, eph_msg_len));
 	if(crypto_sign_open(other_eph_pk, NULL,
 		eph_msg, eph_msg_len, c->other_pk) != 0) return VERIFY_ERROR;
 
@@ -92,10 +106,10 @@ zeolite_error zeolite_create_channel(
 	randombytes_buf(nonce, crypto_box_NONCEBYTES);
 	if(crypto_box_easy(ciphertext, send_k, sizeof(send_k),
 		nonce, other_eph_pk, eph_sk) != 0) return ENCRYPT_ERROR;
-	safe(send(fd, full_sym_msg, sizeof(full_sym_msg)));
+	safe(my_send(fd, full_sym_msg, sizeof(full_sym_msg), 0));
 
 	// receive & decrypt symmetric receiver key
-	safe(recv(fd, full_sym_msg, sizeof(full_sym_msg)));
+	safe(my_recv(fd, full_sym_msg, sizeof(full_sym_msg)));
 	if(crypto_box_open_easy(recv_k,
 		ciphertext, crypto_box_MACBYTES + sizeof(send_k),
 		nonce, other_eph_pk, eph_sk) != 0) return DECRYPT_ERROR;
@@ -105,8 +119,8 @@ zeolite_error zeolite_create_channel(
 
 	if(crypto_secretstream_xchacha20poly1305_init_push(
 		&c->send_state, header, send_k) != 0) return ENCRYPT_ERROR;
-	safe(send(fd, header, sizeof(header)));
-	safe(recv(fd, header, sizeof(header)));
+	safe(my_send(fd, header, sizeof(header), 0));
+	safe(my_recv(fd, header, sizeof(header)));
 	if(crypto_secretstream_xchacha20poly1305_init_pull(
 		&c->recv_state, header, recv_k
 	) != 0) return DECRYPT_ERROR;
@@ -114,27 +128,62 @@ zeolite_error zeolite_create_channel(
 	return SUCCESS;
 }
 
-zeolite_error zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t len) {
-	size_t         cipher_len = len + crypto_secretstream_xchacha20poly1305_ABYTES;
-	unsigned char* ciphertext = malloc(cipher_len);
+static zeolite_error _zeolite_channel_send(
+	zeolite_channel* c,
+	const unsigned char* msg,
+	size_t len,
+	char tag
+) {
+	size_t cipher_len = len + crypto_secretstream_xchacha20poly1305_ABYTES;
+	cipher_storage = realloc(cipher_storage, cipher_len); // TODO sould we realloc everytime?
 
+	safe(my_send(c->fd, &len, sizeof(len), MSG_MORE));
 	if(crypto_secretstream_xchacha20poly1305_push(
-		&c->send_state, ciphertext, NULL, msg, len, NULL, 0, 0
+		&c->send_state, cipher_storage, NULL, msg, len, NULL, 0, tag
 	) != 0) return ENCRYPT_ERROR;
-	safe(send(c->fd, ciphertext, cipher_len));
-	free(ciphertext);
+	safe(my_send(c->fd, cipher_storage, cipher_len, 0));
 	return SUCCESS;
 }
 
-zeolite_error zeolite_channel_recv(zeolite_channel* c, unsigned char* msg, size_t len) {
-	size_t         cipher_len = len + crypto_secretstream_xchacha20poly1305_ABYTES;
-	unsigned char* ciphertext = malloc(cipher_len);
+zeolite_error zeolite_channel_send(
+	zeolite_channel* c,
+	const unsigned char* msg,
+	size_t len
+) {
+	return _zeolite_channel_send(c, msg, len, 0);
+}
 
-	safe(recv(c->fd, ciphertext, cipher_len));
+zeolite_error zeolite_channel_rekey(zeolite_channel* c) {
+	return _zeolite_channel_send(c, (unsigned char*) "", 0,
+		crypto_secretstream_xchacha20poly1305_TAG_REKEY);
+}
+
+zeolite_error zeolite_channel_close(zeolite_channel* c) {
+	int ret = _zeolite_channel_send(c, (unsigned char*) "", 0,
+		crypto_secretstream_xchacha20poly1305_TAG_FINAL);
+	close(c->fd);
+	return ret;
+}
+
+zeolite_error zeolite_channel_recv(
+	zeolite_channel* c,
+	unsigned char** msg,
+	size_t* len
+) {
+	*msg = NULL;
+	*len = 0;
+	safe(my_recv(c->fd, len, sizeof(*len)));
+
+	size_t  cipher_len = *len + crypto_secretstream_xchacha20poly1305_ABYTES;
+	cipher_storage = realloc(cipher_storage, cipher_len); // TODO sould we realloc everytime?
+	msg_storage = realloc(msg_storage, *len); // TODO sould we realloc everytime?
+	*msg = msg_storage;
+
+	safe(my_recv(c->fd, cipher_storage, cipher_len));
 	if(crypto_secretstream_xchacha20poly1305_pull(
-		&c->recv_state, msg, NULL, NULL, ciphertext, cipher_len, NULL, 0
+		&c->recv_state, msg_storage, NULL,
+		NULL, cipher_storage, cipher_len, NULL, 0
 	) != 0) return DECRYPT_ERROR;
-	free(ciphertext);
 	return SUCCESS;
 }
 
@@ -153,7 +202,6 @@ size_t zeolite_dec_b64(const char* b64, size_t b64_len, unsigned char** msg) {
 	size_t len = b64_len / 4 * 3;
 
 	*msg = malloc(len);
-	printf("%p\n", *msg);
 	if(sodium_base642bin(
 		*msg, len,
 		b64, b64_len,
@@ -166,6 +214,7 @@ size_t zeolite_dec_b64(const char* b64, size_t b64_len, unsigned char** msg) {
 const char* zeolite_error_str(zeolite_error e) {
 	switch(e) {
 	case SUCCESS:        return "Success";
+	case EOF_ERROR:      return "End of stream reached";
 	case RECV_ERROR:     return "Could not receive data";
 	case SEND_ERROR:     return "Could not send data";
 	case PROTOCOL_ERROR: return "Communications rotocol violation";
