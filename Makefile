@@ -9,7 +9,7 @@ VALGRIND := valgrind \
 all: $(OUTPUTS)
 
 clean:
-	$(RM)    -- $(OUTPUTS)
+	$(RM)    -- $(OUTPUTS) usage.h
 	$(RM) -r -- man xml
 
 runtest: $(OUTPUTS)

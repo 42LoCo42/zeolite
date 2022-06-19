@@ -21,15 +21,6 @@ typedef unsigned char zeolite_eph_sk[crypto_box_SECRETKEYBYTES];
 /// Symmetric key, used for channel communication
 typedef unsigned char zeolite_sym_k[crypto_secretstream_xchacha20poly1305_KEYBYTES];
 
-
-/// A trust callback should decide whether to trust a client.
-///
-/// It receives the public signature key of the client
-/// that a channel is connecting to and should return
-/// SUCCESS if the client is to be trusted.
-/// Any other value is interpreted as distrust.
-typedef int (*zeolite_trust_callback)(zeolite_sign_pk);
-
 /// Errors of zeolite.
 ///
 /// Use zeolite_error_str() to get a string.
@@ -46,6 +37,14 @@ typedef enum {
 	ENCRYPT_ERROR,
 	DECRYPT_ERROR,
 } zeolite_error;
+
+/// A trust callback should decide whether to trust a client.
+///
+/// It receives the public signature key of the client
+/// that a channel is connecting to and should return
+/// SUCCESS if the client is to be trusted.
+/// Any other value is interpreted as distrust.
+typedef zeolite_error (*zeolite_trust_callback)(zeolite_sign_pk);
 
 /// A zeolite identity.
 ///
