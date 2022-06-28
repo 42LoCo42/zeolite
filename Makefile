@@ -1,5 +1,5 @@
 CFLAGS   += -std=c11 -Wall -Wextra -pedantic -Wno-pointer-arith
-LDFLAGS  += -lsodium
+LDFLAGS  += -lsodium -lkrimskrams
 OUTPUTS  := libzeolite.so cli
 DESTDIR  := /
 VALGRIND := valgrind \
@@ -20,6 +20,7 @@ install: $(OUTPUTS)
 	install -Dm755 cli           $(DESTDIR)/usr/bin/zeolite
 	install -Dm755 libzeolite.so $(DESTDIR)/usr/lib/libzeolite.so
 	install -Dm644 zeolite.h     $(DESTDIR)/usr/include/zeolite.h
+	strip                        $(DESTDIR)/usr/lib/libzeolite.so
 
 doc:
 	doxygen

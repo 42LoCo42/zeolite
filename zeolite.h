@@ -2,6 +2,7 @@
 #define ZEOLITE_H
 
 #include <sodium.h>
+#include <krimskrams/eventloop.h>
 
 /// @file
 /// @brief zeolite - A secure communications library
@@ -104,25 +105,41 @@ zeolite_error zeolite_create(zeolite* z);
 /// to your client. Zeolite will then establish a shared
 /// encryption state with this client, provided the trust callback
 /// returns SUCCESS.
-zeolite_error zeolite_create_channel(
+void zeolite_create_channel(
+	krk_coro_t* coro,
+	const zeolite* z, zeolite_channel* c,
+	int socket, zeolite_trust_callback cb
+);
+
+int zeolite_create_channel_now(
 	const zeolite* z, zeolite_channel* c,
 	int socket, zeolite_trust_callback cb
 );
 
 /// Send a message on a zeolite channel.
-zeolite_error zeolite_channel_send(zeolite_channel* c, const unsigned char* msg, size_t len);
+zeolite_error zeolite_channel_send(
+	krk_coro_t* coro,
+	zeolite_channel* c,
+	const unsigned char* msg,
+	uint32_t len
+);
 
 /// Rekey this channel.
-zeolite_error zeolite_channel_rekey(zeolite_channel* c);
+zeolite_error zeolite_channel_rekey(krk_coro_t* coro, zeolite_channel* c);
 
 /// Close this channel.
-zeolite_error zeolite_channel_close(zeolite_channel* c);
+zeolite_error zeolite_channel_close(krk_coro_t* coro, zeolite_channel* c);
 
 /// Receive a message from zeolite channel.
 ///
 /// `msg` will be set to a pointer to the decrypted message.
 /// `len` will be set to the size of the decrypted message.
-zeolite_error zeolite_channel_recv(zeolite_channel* c, unsigned char** msg, size_t* len);
+zeolite_error zeolite_channel_recv(
+	krk_coro_t* coro,
+	zeolite_channel* c,
+	unsigned char** msg,
+	uint32_t* len
+);
 
 /// Encode something as base64. You must free the returned string.
 char* zeolite_enc_b64(const unsigned char* msg, size_t len);
@@ -139,5 +156,19 @@ const char* zeolite_error_str(zeolite_error e);
 
 /// Prints a base64-encoded string to stdout.
 void zeolite_print_b64(const unsigned char* msg, size_t len);
+
+typedef int (*zeolite_handler_f)(
+	krk_coro_t* coro,
+	krk_eventloop_t* loop,
+	zeolite_channel* channel
+);
+
+int zeolite_multiServer(
+	zeolite* z,
+	const char* addr,
+	const char* port,
+	zeolite_trust_callback trustCallback,
+	zeolite_handler_f handler
+);
 
 #endif // ZEOLITE_H
