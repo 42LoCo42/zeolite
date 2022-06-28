@@ -1,4 +1,6 @@
-libzeolite.so
+*.a
+*.o
+*.so
 cli
 man
 xml

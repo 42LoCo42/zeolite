@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -xe
+in=("zeolite" "cross")
+for i in "${in[@]}"; do
+	zig cc \
+		-target aarch64-linux-musl \
+		-std=c11 \
+		-Wall -Wextra -pedantic \
+		-Wno-pointer-arith \
+		-I /usr/include/ \
+		-fPIC -shared \
+		-L. -lsodium \
+		-c "$i".c \
+		-o "$i".o
+done
+ar rcs libzeolite.a "${in[@]/%/.o}"
