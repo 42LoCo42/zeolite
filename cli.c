@@ -3,143 +3,171 @@
 
 #include <arpa/inet.h>
 #include <err.h>
+#include <errno.h>
+#include <krimskrams/eventloop.h>
+#include <krimskrams/net.h>
 #include <netdb.h>
 #include <poll.h>
-#include <string.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "zeolite.h"
 #include "usage.h"
 
-#define check(cond, ...) if(cond) {err(1, __VA_ARGS__);}
-#define safe(x) { \
-	int ret = x; \
-	if(ret < 0) { \
-		if(verbose) warn("On line %d", __LINE__); \
-		return -1; \
-	}}
-
-typedef int (*addr_callback)(int fd, const struct addrinfo* info);
+#define safe(x, ...)  if(x) {warn(__VA_ARGS__);  return -1;}
+#define safex(x, ...) if(x) {warnx(__VA_ARGS__); return -1;}
 
 static zeolite z;
 static int     disableTrust = 0;
 static int     verbose      = 0;
+static char**  cmd          = 0;
+
+// UTILS
+
+typedef struct {
+	zeolite_channel* c;
+	int readFD;
+	int writeFD;
+} extra;
 
 __attribute__((noreturn)) void printUsage(const char* name) {
 	errx(1, usage, name);
 }
 
-int trustAll(zeolite_sign_pk pk) {
+zeolite_error trustAll(zeolite_sign_pk pk) {
 	char* b64 = zeolite_enc_b64(pk, sizeof(zeolite_sign_pk));
 	fprintf(stderr, "other client is %s\n", b64);
 	free(b64);
 	return SUCCESS;
 }
 
-char* addrToStr(const struct sockaddr* addr) {
-	static char addrToStrBuf[INET6_ADDRSTRLEN];
-	switch(addr->sa_family) {
-	case AF_INET: inet_ntop(
-			AF_INET, &((struct sockaddr_in*) addr)->sin_addr,
-			addrToStrBuf, INET6_ADDRSTRLEN
-		);
-		break;
-	case AF_INET6: inet_ntop(
-			AF_INET6, &((struct sockaddr_in6*) addr)->sin6_addr,
-			addrToStrBuf, INET6_ADDRSTRLEN
-		);
-		break;
-	default:
-		strcpy(addrToStrBuf, "Unknown AF");
+// HANDLERS
+
+void signalHandler(int sig) {
+	switch(sig) {
+		case SIGCHLD: waitpid(-1, NULL, 0); break;
 	}
-	return addrToStrBuf;
 }
 
-void lookup(int sock, const char* host, const char* port, addr_callback cb) {
-	struct addrinfo* info = NULL;
-	struct addrinfo* current = NULL;
-	if(getaddrinfo(host, port, NULL, &info) != 0) errx(1, "Could not lookup host");
-	current = info;
-	for(;;) {
-		if(verbose) printf("Trying address %s\n", addrToStr(current->ai_addr));
-
-		if(cb(sock, current) == 0) break;
-		current = current->ai_next;
-		if(current == NULL) {
-			warn("Could not execute mode; last error");
-			break;
-		}
-	}
-	freeaddrinfo(info);
+int clientErrorHandler(krk_coro_t* coro, krk_eventloop_t* loop) {
+	(void) coro;
+	loop->running = 0;
+	return -1;
 }
 
-int stdinLoop(int sock) {
-	zeolite_create(&z);
-	zeolite_channel c = {0};
-	zeolite_create_channel(&z, &c, sock, trustAll);
+int testHandler(krk_coro_t* coro, krk_eventloop_t* loop, zeolite_channel* c) {
+	puts("in test handler");
+	char*    buf = NULL;
+	uint32_t len = 0;
 
-	struct pollfd fds[] = {
-		{.fd = STDIN_FILENO, .events = POLLIN, .revents = 0},
-		{.fd = sock,         .events = POLLIN, .revents = 0},
-	};
-
-	for(;;) {
-		if(poll(fds, 2, -1) < 1) return 1;
-
-		if(fds[0].revents != 0) {
-			if(fds[0].revents & POLLIN) {
-				size_t len = 8192;
-				unsigned char buf[len];
-				ssize_t ret = read(STDIN_FILENO, buf, len);
-
-				if(ret == 0) return 0;
-				if(ret < 1) return 1;
-				if(zeolite_channel_send(&c, buf, ret) != SUCCESS) return 1;
-			}
-			if(fds[0].revents & POLLHUP) return 0;
-		}
-
-		if(fds[1].revents != 0) {
-			if(fds[1].revents & POLLIN) {
-				size_t          len;
-				unsigned char*  buf;
-				zeolite_error e = zeolite_channel_recv(&c, &buf, &len);
-
-				if(e == EOF_ERROR) return 0;
-				if(e != SUCCESS)   return 1;
-				write(STDOUT_FILENO, buf, len);
-			}
-			if(fds[1].revents & POLLHUP) return 0;
-		}
+	zeolite_error e = zeolite_channel_recv(coro, c, (unsigned char**) &buf, &len);
+	if(strncmp(buf, "quit", 4) == 0) {
+		loop->running = 0;
+	} else {
+		e = zeolite_channel_send(coro, c, (unsigned char*) "abc\n", 4);
 	}
-
+	free(buf);
 	return 0;
 }
 
-int client(int sock, const struct addrinfo* info) {
-	safe(connect(sock, info->ai_addr, info->ai_addrlen));
-	return stdinLoop(sock);
+void encryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
+	(void) loop;
+	(void) fd;
+	extra* e = coro->extra;
+
+	for(;;) {
+		unsigned char buf[8192] = {0};
+		ssize_t got = krk_net_readAny(coro, e->readFD, buf, sizeof(buf));
+		if(got == 0) {
+			close(e->c->fd);
+			close(e->readFD);
+			close(e->writeFD);
+		} else {
+			zeolite_error err = zeolite_channel_send(coro, e->c, buf, got);
+			if(err != SUCCESS) krk_coro_error(coro);
+		}
+	}
 }
 
-int single(int sock, const struct addrinfo* info) {
+void decryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
+	(void) loop;
+	(void) fd;
+	extra* e = coro->extra;
+
+	for(;;) {
+		unsigned char* buf = NULL;
+		uint32_t       len = 0;
+		zeolite_error err = zeolite_channel_recv(coro, e->c, &buf, &len);
+		if(err != SUCCESS) {
+			free(buf);
+			krk_coro_error(coro);
+		}
+		krk_net_writeAll(coro, e->writeFD, buf, len);
+		free(buf);
+	}
+}
+
+// OPERATION MODES
+
+int commonSingular(int sock) {
+	zeolite_channel c = {0};
+	safe(zeolite_create_channel_now(&z, &c, sock, trustAll) < 0,
+		"Could not create client channel");
+
+	extra e = {
+		.c       = &c,
+		.readFD  = STDIN_FILENO,
+		.writeFD = STDOUT_FILENO,
+	};
+
+	krk_eventloop_t loop = {0};
+	loop.errorHandler = clientErrorHandler;
+	krk_eventloop_addFd(&loop, STDIN_FILENO, encryptHandler, &e);
+	krk_eventloop_addFd(&loop, sock,         decryptHandler, &e);
+	krk_eventloop_run(&loop);
+	return 0;
+}
+
+int client(const struct addrinfo* info, void* unused) {
+	(void) unused;
+	if(info->ai_socktype != SOCK_STREAM) return -1;
+
+	int sock = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+	safe(sock < 0, "Could not create client socket");
+
+	safe(connect(sock, info->ai_addr, info->ai_addrlen) < 0,
+		"Could not connect client socket");
+
+	return commonSingular(sock);
+}
+
+int single(const struct addrinfo* info, void* unused) {
+	(void) unused;
+	if(info->ai_socktype != SOCK_STREAM) return -1;
+
+	int sock = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+	safe(sock < 0, "Could not create server socket");
+
 	int yes = 1;
-	safe(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)));
-	safe(bind(sock, info->ai_addr, info->ai_addrlen));
-	safe(listen(sock, 1));
+	safe(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0,
+		"Could not set server socket to reuse address");
+
+	safe(bind(sock, info->ai_addr, info->ai_addrlen) < 0,
+		"Could not bind server socket");
+	safe(listen(sock, 1) < 0, "Could not listen on server socket");
 
 	int client = accept(sock, NULL, 0);
-	safe(client);
-	return stdinLoop(client);
-}
+	safe(client < 0, "Could not accept client");
 
-int multi(int sock, const struct addrinfo* info) {
-	(void) sock;
-	(void) info;
-	warnx("multi is TODO");
-	return 1;
+	return commonSingular(client);
 }
 
 int main(int argc, char** argv) {
+	krk_coro_stack = 1 << 20;
+	signal(SIGPIPE, SIG_IGN);
+	signal(SIGCHLD, signalHandler);
+
 	const char* name = argv[0];
 	for(;;) {
 		char option = getopt(argc, argv, ":kt:T:v");
@@ -165,13 +193,14 @@ int main(int argc, char** argv) {
 	remaining--;
 
 	if(zeolite_init() < 0) errx(1, "Could not load zeolite library");
+	if(zeolite_create(&z) != SUCCESS)
+		errx(1, "Could not create zeolite instance");
+	// TODO create instance based on parameters
 
 	if(strcmp(mode, "gen") == 0) {
-		zeolite_create(&z);
-		printf("%.*s%.*s",
-			(int) sizeof(z.sign_pk), z.sign_pk,
-			(int) sizeof(z.sign_sk), z.sign_sk
-		);
+		write(STDOUT_FILENO, z.sign_pk, sizeof(z.sign_pk));
+		write(STDOUT_FILENO, z.sign_sk, sizeof(z.sign_sk));
+
 		char* b64 = zeolite_enc_b64(z.sign_pk, sizeof(z.sign_pk));
 		fprintf(stderr, "%s", b64);
 		free(b64);
@@ -180,10 +209,8 @@ int main(int argc, char** argv) {
 		free(b64);
 	} else {
 		if(remaining < 2) printUsage(name);
-		addr_callback cb = NULL;
-
-		int sock = socket(AF_INET, SOCK_STREAM, 0);
-		check(sock < 0, "Could not create socket");
+		int ret = 0;
+		krk_net_lookup_try_f cb = NULL;
 
 		if(strcmp(mode, "client") == 0) {
 			cb = client;
@@ -191,13 +218,28 @@ int main(int argc, char** argv) {
 			cb = single;
 		} else if(strcmp(mode, "multi") == 0) {
 			if(remaining < 3) printUsage(name);
-			cb = multi;
+			cmd = &argv[optind + 3];
+			ret = zeolite_multiServer(
+				&z,
+				"localhost",
+				"37812",
+				trustAll,
+				testHandler
+			);
+			goto end;
 		} else {
 			warnx("Unknown mode %s", mode);
 			printUsage(mode);
 		}
 
-		lookup(sock, argv[optind + 1], argv[optind + 2], cb);
+		ret = krk_net_lookup(
+			argv[optind + 1],
+			argv[optind + 2],
+			cb,
+			NULL
+		);
+end:
 		zeolite_free();
+		return -ret;
 	}
 }
