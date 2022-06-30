@@ -112,24 +112,10 @@ void zeolite_create_channel(
 }
 
 int zeolite_create_channel_now(
-	const zeolite* z, zeolite_channel* c,
+	const zeolite* z, zeolite_channel* channel,
 	int sock, zeolite_trust_callback cb
 ) {
-	krk_coro_t setupCoro = {0};
-	if(krk_coro_mk(
-		&setupCoro, zeolite_create_channel, 4,
-		z, c, sock, cb
-	) < 0) {
-		warn("Could not create channel setup coroutine");
-		return -1;
-	}
-	if(krk_coro_force(&setupCoro) < 0) {
-		warnx("Channel setup failed: %s", zeolite_error_str(
-			(zeolite_error) setupCoro.result));
-		return -1;
-	}
-	krk_coro_free(&setupCoro);
-	return 0;
+	return krk_coro_forceA(zeolite_create_channel, 4, z, channel, sock, cb);
 }
 
 static zeolite_error _zeolite_channel_send(
