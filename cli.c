@@ -221,8 +221,8 @@ int main(int argc, char** argv) {
 			cmd = &argv[optind + 3];
 			ret = zeolite_multiServer(
 				&z,
-				"localhost",
-				"37812",
+				argv[optind + 1],
+				argv[optind + 2],
 				trustAll,
 				testHandler
 			);
