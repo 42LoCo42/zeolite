@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <krimskrams/eventloop.h>
 #include <krimskrams/net.h>
 #include <netdb.h>
@@ -12,16 +13,22 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "zeolite.h"
 #include "usage.h"
+#include "zeolite.h"
 
 #define safe(x, ...)  if(x) {warn(__VA_ARGS__);  return -1;}
 #define safex(x, ...) if(x) {warnx(__VA_ARGS__); return -1;}
 
+void proxy(
+	zeolite* z,
+	char* listen_addr,  char* listen_port,
+	char* connect_addr, char* connect_port,
+	int encrypt
+);
+
 static zeolite z;
-static int     disableTrust = 0;
-static int     verbose      = 0;
-static char**  cmd          = 0;
+static int    disableTrust = 0;
+static char** cmd          = 0;
 
 // UTILS
 
@@ -44,34 +51,35 @@ zeolite_error trustAll(zeolite_sign_pk pk) {
 
 // HANDLERS
 
-void signalHandler(int sig) {
+static void signalHandler(int sig) {
 	switch(sig) {
 		case SIGCHLD: waitpid(-1, NULL, 0); break;
 	}
 }
 
-int clientErrorHandler(krk_coro_t* coro, krk_eventloop_t* loop) {
+static int clientErrorHandler(krk_coro_t* coro, krk_eventloop_t* loop) {
 	(void) coro;
 	loop->running = 0;
 	return -1;
 }
 
-int testHandler(krk_coro_t* coro, krk_eventloop_t* loop, zeolite_channel* c) {
+static int testHandler(krk_coro_t* coro, krk_eventloop_t* loop, zeolite_channel* c) {
 	puts("in test handler");
 	char*    buf = NULL;
 	uint32_t len = 0;
 
-	zeolite_error e = zeolite_channel_recv(coro, c, (unsigned char**) &buf, &len);
+	zeolite_channel_recv(coro, c, (unsigned char**) &buf, &len);
+	puts(buf);
 	if(strncmp(buf, "quit", 4) == 0) {
 		loop->running = 0;
 	} else {
-		e = zeolite_channel_send(coro, c, (unsigned char*) "abc\n", 4);
+		zeolite_channel_send(coro, c, (unsigned char*) "abc\n", 4);
 	}
 	free(buf);
 	return 0;
 }
 
-void encryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
+static void encryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
 	(void) loop;
 	(void) fd;
 	extra* e = coro->extra;
@@ -90,7 +98,7 @@ void encryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
 	}
 }
 
-void decryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
+static void decryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
 	(void) loop;
 	(void) fd;
 	extra* e = coro->extra;
@@ -110,7 +118,7 @@ void decryptHandler(krk_coro_t* coro, krk_eventloop_t* loop, int fd) {
 
 // OPERATION MODES
 
-int commonSingular(int sock) {
+static int commonSingular(int sock) {
 	zeolite_channel c = {0};
 	safe(zeolite_create_channel_now(&z, &c, sock, trustAll) < 0,
 		"Could not create client channel");
@@ -129,7 +137,7 @@ int commonSingular(int sock) {
 	return 0;
 }
 
-int client(const struct addrinfo* info, void* unused) {
+static int client(const struct addrinfo* info, void* unused) {
 	(void) unused;
 	if(info->ai_socktype != SOCK_STREAM) return -1;
 
@@ -142,7 +150,7 @@ int client(const struct addrinfo* info, void* unused) {
 	return commonSingular(sock);
 }
 
-int single(const struct addrinfo* info, void* unused) {
+static int single(const struct addrinfo* info, void* unused) {
 	(void) unused;
 	if(info->ai_socktype != SOCK_STREAM) return -1;
 
@@ -168,9 +176,10 @@ int main(int argc, char** argv) {
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGCHLD, signalHandler);
 
+	int created = 0;
 	const char* name = argv[0];
 	for(;;) {
-		char option = getopt(argc, argv, ":kt:T:v");
+		char option = getopt(argc, argv, ":i:I:kt:T:");
 		if(option == -1) break;
 		switch(option) {
 		case '?':
@@ -179,11 +188,42 @@ int main(int argc, char** argv) {
 		case ':':
 			warnx("Option '%c' requires an argument", optopt);
 			printUsage(name);
-		case 'k': disableTrust = 1; break;
-		case 't': case 'T':
-			printf("%s\n", optarg);
+
+		case 'i':
+			char* val = getenv(optarg);
+			if(val == NULL) errx(1, "No such variable: %s", optarg);
+			char* sep = strchr(val, '-');
+			if(sep == NULL) errx(1, "No separator found in variable");
+			sep++;
+
+			char* key = NULL;
+			zeolite_dec_b64(val, sep - val, (unsigned char**) &key);
+			memcpy(z.sign_pk, key, sizeof(z.sign_pk));
+			free(key);
+			zeolite_dec_b64(sep, strlen(sep), (unsigned char**) &key);
+			memcpy(z.sign_sk, key, sizeof(z.sign_sk));
+			free(key);
+
+			created = 1;
 			break;
-		case 'v': verbose = 1; break;
+		case 'I':
+			int file = open(optarg, O_RDONLY);
+			if(file < 0) err(1, "Could not open %s", optarg);
+			if(read(file, z.sign_pk, sizeof(z.sign_pk)) != sizeof(z.sign_pk))
+				err(1, "Could not read public key");
+			if(read(file, z.sign_sk, sizeof(z.sign_sk)) != sizeof(z.sign_sk))
+				err(1, "Could not read secret key");
+			close(file);
+
+			created = 1;
+			break;
+
+		case 'k': disableTrust = 1; break;
+
+		case 't':
+			break;
+		case 'T':
+			break;
 		}
 	}
 
@@ -193,16 +233,15 @@ int main(int argc, char** argv) {
 	remaining--;
 
 	if(zeolite_init() < 0) errx(1, "Could not load zeolite library");
-	if(zeolite_create(&z) != SUCCESS)
+	if(created == 0 && zeolite_create(&z) != SUCCESS)
 		errx(1, "Could not create zeolite instance");
-	// TODO create instance based on parameters
 
 	if(strcmp(mode, "gen") == 0) {
 		write(STDOUT_FILENO, z.sign_pk, sizeof(z.sign_pk));
 		write(STDOUT_FILENO, z.sign_sk, sizeof(z.sign_sk));
 
 		char* b64 = zeolite_enc_b64(z.sign_pk, sizeof(z.sign_pk));
-		fprintf(stderr, "%s", b64);
+		fprintf(stderr, "%s-", b64);
 		free(b64);
 		b64 = zeolite_enc_b64(z.sign_sk, sizeof(z.sign_sk));
 		fprintf(stderr, "%s", b64);
@@ -225,6 +264,34 @@ int main(int argc, char** argv) {
 				argv[optind + 2],
 				trustAll,
 				testHandler
+			);
+			goto end;
+		} else if(strcmp(mode, "proxy") == 0) {
+			if(remaining < 5) printUsage(name);
+
+			char* listen_addr  = argv[optind + 1];
+			char* listen_port  = argv[optind + 2];
+			char* connect_addr = argv[optind + 3];
+			char* connect_port = argv[optind + 4];
+			char* mode_str     = argv[optind + 5];
+
+			int encrypt;
+			if(strcmp(mode_str, "encrypt") == 0)      encrypt = 1;
+			else if(strcmp(mode_str, "decrypt") == 0) encrypt = 0;
+			else {
+				warnx("Invalid proxy mode: %s", mode_str);
+				printUsage(name);
+			}
+
+			printf("Listening on %s:%s\n", listen_addr, listen_port);
+			printf("Connecting to %s:%s\n", connect_addr, connect_port);
+			printf("listen -> connect traffic will be %sed\n", mode_str);
+
+			proxy(
+				&z,
+				listen_addr, listen_port,
+				connect_addr, connect_port,
+				encrypt
 			);
 			goto end;
 		} else {

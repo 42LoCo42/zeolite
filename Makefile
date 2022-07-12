@@ -49,9 +49,12 @@ libzeolite.so: zeolite.c
 	$(CC) $(CFLAGS) -fPIC -shared $(LDFLAGS) $^ -o $@
 
 %: %.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -L. -lzeolite -Wl,-rpath,. $< -o $@
+	$(CC) \
+		$(CFLAGS) $(LDFLAGS) \
+		-L. -lzeolite -Wl,-rpath,. \
+		$(filter %.c, $^) -o $@
 
-cli: cli.c usage.h
+cli: cli.c proxy.c usage.h
 
 usage.h: usage.txt
 	./txtToHeader.sh $< > $@

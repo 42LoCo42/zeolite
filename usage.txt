@@ -1,11 +1,11 @@
 Usage: %s [options] <mode>
 Options:
-	[TODO] -i <name>              Environment variable storing base64-encoded identity
-	[TODO] -I <file>              File storing identity
+	-i <name>              Environment variable storing base64-encoded identity
+	-I <file>              File storing identity
 	[TODO] -k                     Disable trust checking
 	[TODO] -t <client ID>         Trust this ID
 	[TODO] -T <client ID file>    Trust all IDs in this file
-	-v                     Enable verbose output
+
 Modes:
 	gen: Generate new identity. It will be printed to stdout in raw form
 		and to stderr in base64-encoded form.
@@ -19,3 +19,12 @@ Modes:
 	multi <host> <port> <cmd> [args]: Starts a multi handler server.
 		It will spawn cmd with args for each connection,
 		pass received data to stdin and send data read from stdout.
+
+	proxy: Starts a zeolite encryption/decryption proxy. Options:
+		<listen-addr>  <listen-port>
+		<connect-addr> <connect-port>
+		<encrypt|decrypt>
+	For each incoming connection on listen-addr:listen-port,
+	it will connect to connect-addr:connect-port and either
+	encrypt or decrypt traffic in that direction.
+	Traffic coming from the connection will be inversely processed.
