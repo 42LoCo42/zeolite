@@ -26,6 +26,11 @@ void proxy(
 	int encrypt
 );
 
+void trust(zeolite_sign_pk pk);
+void trust_file(const char* path);
+zeolite_error trust_callback(zeolite_sign_pk pk);
+void trust_clean();
+
 static zeolite z;
 static int    disableTrust = 0;
 static char** cmd          = 0;
@@ -46,7 +51,7 @@ zeolite_error trustAll(zeolite_sign_pk pk) {
 	char* b64 = zeolite_enc_b64(pk, sizeof(zeolite_sign_pk));
 	fprintf(stderr, "other client is %s\n", b64);
 	free(b64);
-	return SUCCESS;
+	return disableTrust ? SUCCESS : trust_callback(pk);
 }
 
 // HANDLERS
@@ -190,6 +195,8 @@ int main(int argc, char** argv) {
 			printUsage(name);
 
 		case 'i':
+			if(created) errx(1, "Identity source already specified");
+
 			char* val = getenv(optarg);
 			if(val == NULL) errx(1, "No such variable: %s", optarg);
 			char* sep = strchr(val, '-');
@@ -207,6 +214,8 @@ int main(int argc, char** argv) {
 			created = 1;
 			break;
 		case 'I':
+			if(created) errx(1, "Identity source already specified");
+
 			int file = open(optarg, O_RDONLY);
 			if(file < 0) err(1, "Could not open %s", optarg);
 			if(read(file, z.sign_pk, sizeof(z.sign_pk)) != sizeof(z.sign_pk))
@@ -221,9 +230,12 @@ int main(int argc, char** argv) {
 		case 'k': disableTrust = 1; break;
 
 		case 't':
+			unsigned char* pk = NULL;
+			zeolite_dec_b64(optarg, strlen(optarg), &pk);
+			trust(pk);
+			free(pk);
 			break;
-		case 'T':
-			break;
+		case 'T': trust_file(optarg); break;
 		}
 	}
 
@@ -306,6 +318,7 @@ int main(int argc, char** argv) {
 			NULL
 		);
 end:
+		trust_clean();
 		zeolite_free();
 		return -ret;
 	}

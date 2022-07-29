@@ -54,7 +54,7 @@ libzeolite.so: zeolite.c
 		-L. -lzeolite -Wl,-rpath,. \
 		$(filter %.c, $^) -o $@
 
-cli: cli.c proxy.c usage.h
+cli: cli.c proxy.c trust.c usage.h
 
 usage.h: usage.txt
 	./txtToHeader.sh $< > $@

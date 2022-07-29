@@ -2,9 +2,9 @@ Usage: %s [options] <mode>
 Options:
 	-i <name>              Environment variable storing base64-encoded identity
 	-I <file>              File storing identity
-	[TODO] -k                     Disable trust checking
-	[TODO] -t <client ID>         Trust this ID
-	[TODO] -T <client ID file>    Trust all IDs in this file
+	-k                     Disable trust checking
+	-t <client ID>         Trust this base64-encoded ID
+	-T <client ID file>    Trust all base64-encoded IDs in this file
 
 Modes:
 	gen: Generate new identity. It will be printed to stdout in raw form
